@@ -3,7 +3,7 @@ name: Bot Puerto Coruña
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'  # Se ejecuta automáticamente cada hora
+    - cron: '0 * * * *'
 
 permissions:
   contents: write
@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Descargar código del repositorio
+      - name: Checkout código
         uses: actions/checkout@v3
 
       - name: Configurar Python
@@ -20,8 +20,10 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Instalar librerías
-        run: pip install requests beautifulsoup4
+      - name: Instalar Chrome y Selenium
+        run: |
+          pip install selenium webdriver-manager requests
+          # No hace falta instalar Chrome manual, las máquinas de GitHub ya lo traen
 
       - name: Ejecutar Bot
         env:
