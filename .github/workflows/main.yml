@@ -1,25 +1,40 @@
 name: Bot Puerto Coruña
+
 on:
+  workflow_dispatch:  # Permite que tú le des al botón cuando quieras
   schedule:
-    - cron: '*/30 * * * *' # Se ejecuta cada 30 min
-  workflow_dispatch: # Permite lanzarlo a mano para probar
+    - cron: '0 * * * *'  # El bot se ejecutará solo cada hora (al minuto 0)
+
+permissions:
+  contents: write  # Permiso crucial para que el bot pueda guardar el archivo de memoria
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v2
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
       - name: Configurar Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
+
       - name: Instalar librerías
         run: pip install requests beautifulsoup4
+
       - name: Ejecutar Bot
         env:
-          NEMO_USER: ${{ secrets.NEMO_USER }}
-          NEMO_PASS: ${{ secrets.NEMO_PASS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEMO_USER: ${{ secrets.NEMO_USER }}
+          NEMO_PASS: ${{ secrets.NEMO_PASS }}
         run: python main.py
+
+      - name: Guardar memoria (avisados.txt)
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "actions@github.com"
+          git add avisados.txt || true
+          git commit -m "Bot: Actualizando lista de barcos avisados [skip ci]" || true
+          git push || true
