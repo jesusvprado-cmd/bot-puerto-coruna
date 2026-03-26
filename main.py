@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -8,133 +9,157 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from datetime import datetime
 
-# --- CONFIGURACIÓN DE SECRETOS ---
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-MY_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-USER_NEMO = os.getenv('NEMO_USER')
-PASS_NEMO = os.getenv('NEMO_PASS')
-AVISADOS_FILE = "avisados.txt"
+# Configuración de Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-def bot_send(mensaje):
-    """Envía un mensaje a Telegram"""
-    if not TOKEN or not MY_CHAT_ID:
-        print("Faltan los secretos de Telegram.")
-        return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": MY_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
+# Configuracion de variables de entorno
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+NEMO_USER = os.getenv('NEMO_USER')
+NEMO_PASS = os.getenv('NEMO_PASS')
+
+HISTORY_FILE = "avisados.txt"
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
     try:
-        r = requests.post(url, json=payload)
-        print(f"Resultado envío Telegram: {r.status_code}")
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
     except Exception as e:
-        print(f"Error enviando Telegram: {e}")
+        logging.error(f"Error enviando mensaje a Telegram: {e}")
 
-def get_nemo_data_selenium():
-    """Navega por la web y extrae los barcos"""
-    print("Iniciando navegador invisible...")
-    options = Options()
-    options.add_argument("--headless") # Sin ventana
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument('--ignore-certificate-errors') # Salta el error de privacidad
-    options.add_argument('--ignore-ssl-errors')
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+def get_notified_ids():
+    if not os.path.exists(HISTORY_FILE):
+        return set()
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
+def save_notified_id(ship_id):
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ship_id}\n")
+
+def find_table_rows(driver):
+    """Busca filas de la tabla principal, entrando en iframes si es necesario."""
+    # Intentar en el contenido principal primero
+    rows = driver.find_elements(By.TAG_NAME, "tr")
+    if len(rows) > 10:
+        return rows
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    barcos = []
+    # Si no hay suficientes filas, buscar en iframes
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    logging.info(f"Se encontraron {len(iframes)} iframes. Probando contenido...")
+    
+    for index, iframe in enumerate(iframes):
+        try:
+            driver.switch_to.frame(iframe)
+            rows = driver.find_elements(By.TAG_NAME, "tr")
+            if len(rows) > 10:
+                logging.info(f"Tabla encontrada en el iframe índice {index}.")
+                return rows
+            # Si no está aquí, volver al principal para probar el siguiente
+            driver.switch_to.default_content()
+        except Exception:
+            driver.switch_to.default_content()
+            continue
+    return []
 
+def run_scraper():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--ignore-certificate-errors")
+    
+    # Inicializar WebDriver
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    wait = WebDriverWait(driver, 30)
+    
     try:
-        # 1. LOGIN
-        print("Paso 1: Realizando login...")
+        logging.info("Accediendo a la página de login...")
         driver.get("https://nemopilots.com/login")
         
-        wait = WebDriverWait(driver, 20)
-        user_field = wait.until(EC.presence_of_element_located((By.NAME, "_username")))
-        pass_field = driver.find_element(By.NAME, "_password")
+        # Esperar y realizar login
+        username_field = wait.until(EC.element_to_be_clickable((By.NAME, "_username")))
+        password_field = driver.find_element(By.NAME, "_password")
         
-        user_field.send_keys(USER_NEMO)
-        pass_field.send_keys(PASS_NEMO)
-        driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+        username_field.send_keys(NEMO_USER)
+        password_field.send_keys(NEMO_PASS)
         
-        # 2. ACCESO A DATOS
-        print("Paso 2: Entrando en Planificación...")
-        time.sleep(5)
+        login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        login_button.click()
+        
+        logging.info("Login enviado. Esperando navegación a planificación...")
+        time.sleep(5) # Pequeña pausa tras login
+        
         driver.get("https://nemopilots.com/planificacion/")
         
-        # Espera estratégica por el circulito de carga del vídeo (20 seg)
-        print("Esperando 20 segundos a que el puerto cargue los datos...")
-        time.sleep(20) 
-
-        # 3. DETECTOR DE MARCOS (IFRAMES)
-        # Si la tabla está vacía, buscamos dentro de iframes
-        filas = driver.find_elements(By.TAG_NAME, "tr")
+        # Espera generosa para carga AJAX/JS
+        logging.info("Esperando renderizado de la tabla (15s)...")
+        time.sleep(15)
         
-        if len(filas) < 5:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            if iframes:
-                print(f"Detectados {len(iframes)} marcos. Buscando datos dentro...")
-                for i in range(len(iframes)):
-                    driver.switch_to.frame(i)
-                    filas_internas = driver.find_elements(By.TAG_NAME, "tr")
-                    if len(filas_internas) > 5:
-                        print(f"¡Datos localizados en el marco {i}!")
-                        filas = filas_internas
-                        break
-                    driver.switch_to.default_content()
-
-        # 4. PROCESAR FILAS
-        print(f"Analizando {len(filas)} filas detectadas...")
-        for f in filas:
-            cols = f.find_elements(By.TAG_NAME, "td")
-            if len(cols) >= 13: # Columnas mínimas según la web de Nemo
-                datos = [c.text.strip() for c in cols]
-                # ETA=0, Nombre=3, Muelle=11, Operación=13
-                if len(datos[3]) > 2: 
-                    barcos.append({
-                        'eta': datos[0],
-                        'nombre': datos[3],
-                                            'consignatario': datos[9] if len(datos) > 9 else "S/D",
-                        'muelle': datos[11] if len(datos) > 11 else "S/D",
-                        'op': datos[13] if len(datos) > 13 else "S/D"
-                    })
+        rows = find_table_rows(driver)
+        logging.info(f"Filas totales detectadas: {len(rows)}")
+        
+        notified_ids = get_notified_ids()
+        new_notifications = 0
+        
+        for row in rows:
+            try:
+                cols = row.find_elements(By.TAG_NAME, "td")
+                # Estructura esperada: ETA(0), Buque(3), Consignatario(9), Muelle(11), Operación(13)
+                if len(cols) >= 14:
+                    eta = cols[0].text.strip()
+                    nombre = cols[3].text.strip()
+                    consignatario = cols[9].text.strip()
+                    muelle = cols[11].text.strip()
+                    operacion = cols[13].text.strip()
+                    
+                    if not nombre or not eta:
+                        continue
+                        
+                    # Identificador único simplificado
+                    ship_id = f"{nombre}_{eta}".replace(" ", "_").replace("/", "-")
+                    
+                    if ship_id not in notified_ids:
+                        message = (
+                            f"🚢 *Nueva Entrada Planificada*\n\n"
+                            f"*Buque:* {nombre}\n"
+                            f"*ETA:* {eta}\n"
+                            f"*Consignatario:* {consignatario}\n"
+                            f"*Muelle:* {muelle}\n"
+                            f"*Operación:* {operacion}"
+                        )
+                        logging.info(f"Enviando notificación: {nombre}")
+                        send_telegram_message(message)
+                        save_notified_id(ship_id)
+                        notified_ids.add(ship_id)
+                        new_notifications += 1
+            except Exception:
+                continue # Saltar filas con errores de lectura
+        
+        logging.info(f"Script finalizado correctamente. Nuevos avisos: {new_notifications}")
+        
     except Exception as e:
-        print(f"⚠️ ERROR DURANTE EL PROCESO: {e}")
+        logging.error(f"Error crítico durante la ejecución: {e}")
+        driver.save_screenshot("error_screenshot.png")
+        logging.info("Se ha guardado una captura de pantalla del error.")
     finally:
         driver.quit()
-    return barcos
 
 if __name__ == "__main__":
-    ahora = datetime.now().strftime('%d/%m/%Y %H:%M')
-    print(f"--- INICIO EJECUCIÓN: {ahora} ---")
-    
-    lista_barcos = get_nemo_data_selenium()
-    
-    # Cargar historial para no repetir avisos
-    avisados = set()
-    if os.path.exists(AVISADOS_FILE):
-        with open(AVISADOS_FILE, "r") as f:
-            avisados = set(f.read().splitlines())
+    if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, NEMO_USER, NEMO_PASS]):
+        logging.error("Configuración incompleta: Verifica las variables de entorno.")
+    else:
+        run_scraper()
 
-    nuevos_avisos = 0
-    for b in lista_barcos:
-        id_unico = f"{b['nombre']}-{b['eta']}"
-        
-        if id_unico not in avisados:
-            print(f"Nuevo barco encontrado: {b['nombre']}")
-            mensaje = (f"🚢 **NUEVA ENTRADA DETECTADA**\n\n"
-                       f"🔹 *Buque:* {b['nombre']}\n"
-                       f"🕒 *ETA:* {b['eta']}\n"
-                       f"⚓ *Muelle:* {b['muelle']}\n"
-                                               f" *Consignatario:* {b['consignatario']}\n"
-                       f"🏗️ *Op:* {b['op']}")
-            
-            bot_send(mensaje)
-            avisados.add(id_unico)
-            nuevos_avisos += 1
-
-    # Guardar la memoria para la siguiente hora
-    with open(AVISADOS_FILE, "w") as f:
-        f.write("\n".join(avisados))
-    
-    print(f"--- FIN: {nuevos_avisos} barcos nuevos notificados ---")
