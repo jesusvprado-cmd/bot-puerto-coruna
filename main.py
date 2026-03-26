@@ -5,7 +5,7 @@ import time
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# Desactivar avisos de seguridad SSL por el fallo de la web
+# Desactivar avisos de seguridad SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURACIÓN DE SECRETOS ---
@@ -30,50 +30,61 @@ def get_nemo_data():
     print("--- INICIANDO FASE DE ACCESO ---")
     session = requests.Session()
     session.verify = False 
-    
-    login_url = "https://nemopilots.com/login"
-    login_check_url = "https://nemopilots.com/login_check"
+    # Añadimos cabeceras de navegador real para que no nos bloqueen
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest'
+    })
     
     try:
-        # 1. Obtener el Token CSRF
-        print("Paso 1: Capturando token de seguridad...")
-        first_page = session.get(login_url, verify=False)
-        soup_init = BeautifulSoup(first_page.text, 'html.parser')
-        
-        csrf_token = ""
-        token_input = soup_init.find('input', {'name': '_csrf_token'})
-        if token_input:
-            csrf_token = token_input.get('value')
-            print("Token capturado.")
-        
-        # 2. Hacer el Login
-        print(f"Paso 2: Login con usuario {USER_NEMO}...")
+        # 1. Obtener Token CSRF
+        login_page = session.get("https://nemopilots.com/login", verify=False)
+        soup_init = BeautifulSoup(login_page.text, 'html.parser')
+        token = soup_init.find('input', {'name': '_csrf_token'})
+        csrf_token = token.get('value') if token else ""
+
+        # 2. Login
         payload = {'_username': USER_NEMO, '_password': PASS_NEMO, '_csrf_token': csrf_token}
-        session.post(login_check_url, data=payload, verify=False)
+        session.post("https://nemopilots.com/login_check", data=payload, verify=False)
+        print("Login realizado. Esperando a que carguen los datos...")
         
-        # 3. Leer la Planificación
-        print("Paso 3: Leyendo tablas de barcos...")
+        # 3. Acceder a la planificación (Esperamos 5 segundos para simular la carga)
+        time.sleep(5)
         res = session.get("https://nemopilots.com/planificacion/", verify=False)
         soup = BeautifulSoup(res.text, 'html.parser')
         
         barcos = []
         tablas = soup.find_all('table')
-        print(f"Se han encontrado {len(tablas)} tablas en total.")
+        
+        # Si no hay tablas, probamos a buscar por una clase específica que se ve en el vídeo
+        if not tablas:
+            print("No se ven tablas normales, buscando capas de datos...")
+            # En el vídeo se ven filas con clases tipo 'row' o 'buque'
+            # Intentamos capturar cualquier cosa que parezca una fila de barco
+            filas = soup.select('tr') or soup.select('.row')
+        else:
+            # Si hay tablas, cogemos todas las filas de todas las tablas
+            filas = []
+            for t in tablas:
+                filas.extend(t.find_all('tr'))
 
-        for i, t in enumerate(tablas):
-            filas = t.find_all('tr')
-            if len(filas) > 1:
-                print(f"Analizando Tabla {i+1}...")
-                for f in filas[1:]:
-                    cols = f.find_all('td')
-                    if len(cols) > 13:
-                        barcos.append({
-                            'eta_str': cols[0].get_text(strip=True),
-                            'nombre': cols[3].get_text(strip=True),
-                            'muelle': cols[11].get_text(strip=True),
-                            'operacion': cols[13].get_text(strip=True),
-                            'consignatario': cols[9].get_text(strip=True)
-                        })
+        print(f"Filas encontradas para analizar: {len(filas)}")
+
+        for f in filas:
+            cols = f.find_all('td')
+            if len(cols) > 13:
+                # Limpiamos el texto de espacios y saltos de línea
+                nombre = cols[3].get_text(strip=True)
+                eta = cols[0].get_text(strip=True)
+                if nombre and eta:
+                    barcos.append({
+                        'eta_str': eta,
+                        'nombre': nombre,
+                        'muelle': cols[11].get_text(strip=True),
+                        'operacion': cols[13].get_text(strip=True),
+                        'consignatario': cols[9].get_text(strip=True)
+                    })
+        
         return barcos
 
     except Exception as e:
@@ -82,35 +93,39 @@ def get_nemo_data():
 
 def monitor_automatico():
     data = get_nemo_data()
-    if not data:
-        print("No se encontraron datos. Revisando si es por el login...")
-        return
-
+    
+    # Historial de barcos ya avisados
     avisados = set()
     if os.path.exists(AVISADOS_FILE):
         with open(AVISADOS_FILE, "r") as f:
             avisados = set(f.read().splitlines())
 
+    if not data:
+        print("⚠️ La web no ha devuelto barcos todavía. Puede que necesitemos Selenium.")
+        return
+
     for b in data:
-        # AQUÍ HEMOS CORREGIDO EL ERROR DE SINTAXIS (Cerrando bien el f-string)
+        # ID único: Nombre + Fecha (Corregido el error de sintaxis anterior)
         id_unico = f"{b['nombre']}-{b['eta_str']}"
         
         if id_unico not in avisados:
-            print(f"¡Nuevo barco! Avisando de: {b['nombre']}")
-            mensaje = (f"🔔 **NUEVA ENTRADA DETECTADA**\n\n"
-                       f"🚢 *Buque:* {b['nombre']}\n"
-                       f"📅 *ETA:* {b['eta_str']}\n"
-                       f"⚓ *Muelle:* {b['muelle']}\n"
+            print(f"¡Nuevo barco! {b['nombre']}")
+            mensaje = (f"🚢 **NUEVO BUQUE DETECTADO**\n\n"
+                       f"🔹 *Nombre:* {b['nombre']}\n"
+                       f"🕒 *ETA:* {b['eta_str']}\n"
+                       f"📍 *Muelle:* {b['muelle']}\n"
                        f"🏗️ *Operación:* {b['operacion']}\n"
                        f"🏢 *Consignatario:* {b['consignatario']}")
             
             bot_send(MY_CHAT_ID, mensaje)
             avisados.add(id_unico)
 
+    # Guardar memoria
     with open(AVISADOS_FILE, "w") as f:
         f.write("\n".join(avisados))
 
 if __name__ == "__main__":
-    print(f"--- BOT PUERTO CORUÑA: {datetime.now().strftime('%d/%m/%y %H:%M')} ---")
+    ahora = datetime.now().strftime('%d/%m/%Y %H:%M')
+    print(f"--- BOT PUERTO CORUÑA: {ahora} ---")
     monitor_automatico()
-    print("--- PROCESO COMPLETADO ---")
+    print("--- PROCESO FINALIZADO ---")
