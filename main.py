@@ -1,39 +1,32 @@
 import os
 import requests
 import urllib3
+import time
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# Desactivamos los avisos de seguridad por el certificado de la web
+# Desactivar avisos de seguridad SSL por el fallo de la web
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CONFIGURACIÓN DE SECRETOS (GitHub) ---
+# --- CONFIGURACIÓN DE SECRETOS ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
-MY_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 USER_NEMO = os.getenv('NEMO_USER')
 PASS_NEMO = os.getenv('NEMO_PASS')
+MY_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 AVISADOS_FILE = "avisados.txt"
 
-def bot_send(mensaje):
-    """Envía un mensaje a tu Telegram"""
-    if not TOKEN or not MY_CHAT_ID:
-        print("❌ Error: Faltan los secretos de Telegram en GitHub.")
-        return
-    
+def bot_send(chat_id, mensaje):
+    if not chat_id: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": MY_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
+    payload = {"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}
     try:
         r = requests.post(url, json=payload)
-        if r.status_code == 200:
-            print("✅ Mensaje enviado a Telegram correctamente.")
-        else:
-            print(f"❌ Error Telegram: {r.status_code} - {r.text}")
+        print(f"Estado envío Telegram: {r.status_code}")
     except Exception as e:
-        print(f"❌ Error de conexión con Telegram: {e}")
+        print(f"Error enviando Telegram: {e}")
 
 def get_nemo_data():
-    """Entra en NemoPilots y saca la tabla de barcos"""
     print("--- INICIANDO FASE DE ACCESO ---")
     session = requests.Session()
     session.verify = False 
@@ -42,7 +35,7 @@ def get_nemo_data():
     login_check_url = "https://nemopilots.com/login_check"
     
     try:
-        # 1. Obtener el Token CSRF de la pantalla de entrada
+        # 1. Obtener el Token CSRF
         print("Paso 1: Capturando token de seguridad...")
         first_page = session.get(login_url, verify=False)
         soup_init = BeautifulSoup(first_page.text, 'html.parser')
@@ -52,40 +45,26 @@ def get_nemo_data():
         if token_input:
             csrf_token = token_input.get('value')
             print("Token capturado.")
-        else:
-            print("⚠️ No se encontró el token, intentando login directo...")
-
-        # 2. Hacer el Login Real
-        print(f"Paso 2: Intentando login como {USER_NEMO}...")
-        payload = {
-            '_username': USER_NEMO, 
-            '_password': PASS_NEMO,
-            '_csrf_token': csrf_token
-        }
+        
+        # 2. Hacer el Login
+        print(f"Paso 2: Login con usuario {USER_NEMO}...")
+        payload = {'_username': USER_NEMO, '_password': PASS_NEMO, '_csrf_token': csrf_token}
         session.post(login_check_url, data=payload, verify=False)
         
-        # 3. Acceder a la planificación
-        print("Paso 3: Cargando tabla de planificación...")
+        # 3. Leer la Planificación
+        print("Paso 3: Leyendo tablas de barcos...")
         res = session.get("https://nemopilots.com/planificacion/", verify=False)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        titulo = soup.title.string.strip() if soup.title else ""
-        print(f"Página cargada: {titulo}")
-
-        if "Planificación" not in titulo:
-            print("❌ ERROR: No se ha podido entrar en la zona privada. Revisa usuario/pass.")
-            return []
-
-        # 4. Procesar las tablas
         barcos = []
         tablas = soup.find_all('table')
-        print(f"Se han encontrado {len(tablas)} tablas.")
+        print(f"Se han encontrado {len(tablas)} tablas en total.")
 
         for i, t in enumerate(tablas):
             filas = t.find_all('tr')
             if len(filas) > 1:
-                print(f"Extrayendo datos de la tabla {i+1} ({len(filas)} filas)...")
-                for f in filas[1:]: # Saltamos cabecera
+                print(f"Analizando Tabla {i+1}...")
+                for f in filas[1:]:
                     cols = f.find_all('td')
                     if len(cols) > 13:
                         barcos.append({
@@ -98,20 +77,40 @@ def get_nemo_data():
         return barcos
 
     except Exception as e:
-        print(f"❌ Error en el proceso: {e}")
+        print(f"Error: {e}")
         return []
 
 def monitor_automatico():
     data = get_nemo_data()
     if not data:
-        print("No hay barcos nuevos o no se pudo leer la tabla.")
+        print("No se encontraron datos. Revisando si es por el login...")
         return
 
-    # Gestionar memoria (quién ha sido avisado ya)
     avisados = set()
     if os.path.exists(AVISADOS_FILE):
         with open(AVISADOS_FILE, "r") as f:
             avisados = set(f.read().splitlines())
 
     for b in data:
-        id_unico = f"{b['nombre']
+        # AQUÍ HEMOS CORREGIDO EL ERROR DE SINTAXIS (Cerrando bien el f-string)
+        id_unico = f"{b['nombre']}-{b['eta_str']}"
+        
+        if id_unico not in avisados:
+            print(f"¡Nuevo barco! Avisando de: {b['nombre']}")
+            mensaje = (f"🔔 **NUEVA ENTRADA DETECTADA**\n\n"
+                       f"🚢 *Buque:* {b['nombre']}\n"
+                       f"📅 *ETA:* {b['eta_str']}\n"
+                       f"⚓ *Muelle:* {b['muelle']}\n"
+                       f"🏗️ *Operación:* {b['operacion']}\n"
+                       f"🏢 *Consignatario:* {b['consignatario']}")
+            
+            bot_send(MY_CHAT_ID, mensaje)
+            avisados.add(id_unico)
+
+    with open(AVISADOS_FILE, "w") as f:
+        f.write("\n".join(avisados))
+
+if __name__ == "__main__":
+    print(f"--- BOT PUERTO CORUÑA: {datetime.now().strftime('%d/%m/%y %H:%M')} ---")
+    monitor_automatico()
+    print("--- PROCESO COMPLETADO ---")
