@@ -59,7 +59,7 @@ def run_scraper():
         logging.info("Login OK. Navegando a Planificación...")
         time.sleep(10)
         
-        # Clic en Planificación del menú lateral
+        # Navegar clicando en el menú
         try:
             plan_menu = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Planificaci")))
             plan_menu.click()
@@ -68,7 +68,6 @@ def run_scraper():
             driver.get("https://nemopilots.com/planificacion")
             time.sleep(10)
 
-        # Buscar tablas (el portal de Coruña tiene varias)
         tables = driver.find_elements(By.TAG_NAME, "table")
         logging.info(f"Tablas encontradas: {len(tables)}")
         
@@ -79,29 +78,29 @@ def run_scraper():
             rows = table.find_elements(By.TAG_NAME, "tr")
             for row in rows:
                 cols = row.find_elements(By.TAG_NAME, "td")
-                # Según tu foto, la tabla de Planificación tiene unas 13 columnas
+                
+                # Columnas según captura: ETA(0), Buque(6), Consigna(10), Atraque(11)
                 if len(cols) >= 11:
                     try:
-                        # AJUSTE DE COLUMNAS SEGÚN TU FOTO:
-                        eta = cols[0].text.strip()    # Columna 0: ETA
-                        nombre = cols[6].text.strip() # Columna 6: Buque
-                        consigna = cols[10].text.strip() # Columna 10: Consignataria
-                        muelle = cols[11].text.strip() # Columna 11: Atraque
+                        eta = cols[0].text.strip()
+                        buque = cols[6].text.strip()
+                        muelle = cols[11].text.strip()
                         
-                        if not (nombre and eta and "202" in eta): 
-                            continue # Evitar filas vacías o cabeceras
+                        # Validar que sea una fila con datos (tiene que haber una fecha con '/')
+                        if not (buque and eta and "/" in eta): 
+                            continue
                             
-                        ship_id = f"{nombre}_{eta}".replace(" ", "_").replace("/", "-")
+                        # ID único para no repetir
+                        ship_id = f"{buque}_{eta}".replace(" ", "_").replace("/", "-")
                         
                         if ship_id not in notified_ids:
                             message = (
-                                f"🚢 *Nueva Entrada Planificada Coruña*\n\n"
-                                f"*Buque:* {nombre}\n"
+                                f"🚢 *Nueva Planificación Coruña*\n\n"
+                                f"*Buque:* {buque}\n"
                                 f"*ETA:* {eta}\n"
-                                f"*Consignataria:* {consigna}\n"
-                                f"*Muelle/Atraque:* {muelle}"
+                                f"*Muelle:* {muelle}"
                             )
-                            logging.info(f"¡Barco detectado! -> {nombre}")
+                            logging.info(f"¡NUEVO BARCO ENCONTRADO! -> {buque}")
                             send_telegram_message(message)
                             save_notified_id(ship_id)
                             notified_ids.add(ship_id)
@@ -109,7 +108,7 @@ def run_scraper():
                     except:
                         continue
         
-        logging.info(f"Proceso finalizado. Total nuevos barcos: {new_notifications}")
+        logging.info(f"Proceso finalizado. Nuevos barcos detectados: {new_notifications}")
         
     except Exception as e:
         logging.error(f"Error: {e}")
