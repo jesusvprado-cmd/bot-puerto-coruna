@@ -94,6 +94,7 @@ def get_nemo_data_selenium():
                     barcos.append({
                         'eta': datos[0],
                         'nombre': datos[3],
+                                            'consignatario': datos[9] if len(datos) > 9 else "S/D",
                         'muelle': datos[11] if len(datos) > 11 else "S/D",
                         'op': datos[13] if len(datos) > 13 else "S/D"
                     })
@@ -125,6 +126,7 @@ if __name__ == "__main__":
                        f"🔹 *Buque:* {b['nombre']}\n"
                        f"🕒 *ETA:* {b['eta']}\n"
                        f"⚓ *Muelle:* {b['muelle']}\n"
+                                               f" *Consignatario:* {b['consignatario']}\n"
                        f"🏗️ *Op:* {b['op']}")
             
             bot_send(mensaje)
