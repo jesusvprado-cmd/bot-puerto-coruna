@@ -5,10 +5,12 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE SECRETOS ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 MY_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 USER_NEMO = os.getenv('NEMO_USER')
@@ -16,69 +18,79 @@ PASS_NEMO = os.getenv('NEMO_PASS')
 AVISADOS_FILE = "avisados.txt"
 
 def bot_send(mensaje):
+    """Envía un mensaje a Telegram"""
+    if not TOKEN or not MY_CHAT_ID:
+        print("Faltan los secretos de Telegram.")
+        return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": MY_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
-    try: requests.post(url, json=payload)
-    except: pass
+    try:
+        r = requests.post(url, json=payload)
+        print(f"Resultado envío Telegram: {r.status_code}")
+    except Exception as e:
+        print(f"Error enviando Telegram: {e}")
 
 def get_nemo_data_selenium():
-    print("Iniciando navegador con esteroides...")
+    """Navega por la web y extrae los barcos"""
+    print("Iniciando navegador invisible...")
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless") # Sin ventana
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument('--ignore-certificate-errors')
+    options.add_argument('--ignore-certificate-errors') # Salta el error de privacidad
+    options.add_argument('--ignore-ssl-errors')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     barcos = []
 
     try:
-        print("Cargando web de Nemo Pilots...")
+        # 1. LOGIN
+        print("Paso 1: Realizando login...")
         driver.get("https://nemopilots.com/login")
-        time.sleep(5)
-
-        # 1. Intentar hacer Login (más robusto)
-        print("Buscando campos de acceso...")
         
-        # Probamos a encontrar el usuario por varios métodos
-        try:
-            # Buscamos por nombre, id o incluso por el tipo 'text'
-            user_field = driver.find_element(By.NAME, "_username") or driver.find_element(By.ID, "username")
-            pass_field = driver.find_element(By.NAME, "_password") or driver.find_element(By.ID, "password")
-            btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-            
-            print("Introduciendo datos...")
-            user_field.send_keys(USER_NEMO)
-            pass_field.send_keys(PASS_NEMO)
-            btn.click()
-            print("Botón de entrar pulsado.")
-            
-        except Exception as e_login:
-            print(f"No encontré los cuadros normales: {e_login}")
-            # Si falla, sacamos una lista de qué hay en la pantalla para investigar
-            inputs = driver.find_elements(By.TAG_NAME, "input")
-            print(f"He encontrado {len(inputs)} cuadros de texto. Nombres: {[i.get_attribute('name') for i in inputs]}")
-            return []
-
-        # 2. Ir a la Planificación
+        wait = WebDriverWait(driver, 20)
+        user_field = wait.until(EC.presence_of_element_located((By.NAME, "_username")))
+        pass_field = driver.find_element(By.NAME, "_password")
+        
+        user_field.send_keys(USER_NEMO)
+        pass_field.send_keys(PASS_NEMO)
+        driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+        
+        # 2. ACCESO A DATOS
+        print("Paso 2: Entrando en Planificación...")
         time.sleep(5)
-        print("Accediendo a la tabla de Coruña...")
         driver.get("https://nemopilots.com/planificacion/")
         
-        # Espera extra por el circulito de carga
-        print("Esperando a que el puerto cargue los datos...")
-        time.sleep(15) 
-        
-        # 3. Leer la tabla
-        filas = driver.find_elements(By.TAG_NAME, "tr")
-        print(f"¡ÉXITO! Filas detectadas: {len(filas)}")
+        # Espera estratégica por el circulito de carga del vídeo (20 seg)
+        print("Esperando 20 segundos a que el puerto cargue los datos...")
+        time.sleep(20) 
 
+        # 3. DETECTOR DE MARCOS (IFRAMES)
+        # Si la tabla está vacía, buscamos dentro de iframes
+        filas = driver.find_elements(By.TAG_NAME, "tr")
+        
+        if len(filas) < 5:
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            if iframes:
+                print(f"Detectados {len(iframes)} marcos. Buscando datos dentro...")
+                for i in range(len(iframes)):
+                    driver.switch_to.frame(i)
+                    filas_internas = driver.find_elements(By.TAG_NAME, "tr")
+                    if len(filas_internas) > 5:
+                        print(f"¡Datos localizados en el marco {i}!")
+                        filas = filas_internas
+                        break
+                    driver.switch_to.default_content()
+
+        # 4. PROCESAR FILAS
+        print(f"Analizando {len(filas)} filas detectadas...")
         for f in filas:
             cols = f.find_elements(By.TAG_NAME, "td")
-            if len(cols) >= 13:
+            if len(cols) >= 13: # Columnas mínimas según la web de Nemo
                 datos = [c.text.strip() for c in cols]
-                if datos[3] and len(datos[3]) > 2: # Nombre del barco
+                # ETA=0, Nombre=3, Muelle=11, Operación=13
+                if len(datos[3]) > 2: 
                     barcos.append({
                         'eta': datos[0],
                         'nombre': datos[3],
@@ -86,33 +98,41 @@ def get_nemo_data_selenium():
                         'op': datos[13] if len(datos) > 13 else "S/D"
                     })
     except Exception as e:
-        print(f"⚠️ FALLO GENERAL: {e}")
+        print(f"⚠️ ERROR DURANTE EL PROCESO: {e}")
     finally:
         driver.quit()
     return barcos
 
 if __name__ == "__main__":
-    print(f"--- EJECUCIÓN: {datetime.now().strftime('%H:%M')} ---")
-    barcos_hoy = get_nemo_data_selenium()
+    ahora = datetime.now().strftime('%d/%m/%Y %H:%M')
+    print(f"--- INICIO EJECUCIÓN: {ahora} ---")
     
+    lista_barcos = get_nemo_data_selenium()
+    
+    # Cargar historial para no repetir avisos
     avisados = set()
     if os.path.exists(AVISADOS_FILE):
         with open(AVISADOS_FILE, "r") as f:
             avisados = set(f.read().splitlines())
 
-    for b in barcos_hoy:
-        id_b = f"{b['nombre']}-{b['eta']}"
-        if id_b not in avisados:
-            print(f"Notificando barco: {b['nombre']}")
-            msg = (f"🚢 **NUEVO BARCO EN PUERTO**\n\n"
-                   f"⚓ *Nombre:* {b['nombre']}\n"
-                   f"🕒 *Llegada:* {b['eta']}\n"
-                   f"📍 *Muelle:* {b['muelle']}\n"
-                   f"🏗️ *Op:* {b['op']}")
-            bot_send(msg)
-            avisados.add(id_b)
+    nuevos_avisos = 0
+    for b in lista_barcos:
+        id_unico = f"{b['nombre']}-{b['eta']}"
+        
+        if id_unico not in avisados:
+            print(f"Nuevo barco encontrado: {b['nombre']}")
+            mensaje = (f"🚢 **NUEVA ENTRADA DETECTADA**\n\n"
+                       f"🔹 *Buque:* {b['nombre']}\n"
+                       f"🕒 *ETA:* {b['eta']}\n"
+                       f"⚓ *Muelle:* {b['muelle']}\n"
+                       f"🏗️ *Op:* {b['op']}")
+            
+            bot_send(mensaje)
+            avisados.add(id_unico)
+            nuevos_avisos += 1
 
+    # Guardar la memoria para la siguiente hora
     with open(AVISADOS_FILE, "w") as f:
         f.write("\n".join(avisados))
     
-    print(f"Finalizado. Barcos encontrados: {len(barcos_hoy)}")
+    print(f"--- FIN: {nuevos_avisos} barcos nuevos notificados ---")
