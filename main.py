@@ -49,14 +49,12 @@ def save_notified_id(ship_id):
 
 def find_table_rows(driver):
     """Busca filas de la tabla principal, entrando en iframes si es necesario."""
-    # Intentar en el contenido principal primero
     rows = driver.find_elements(By.TAG_NAME, "tr")
     if len(rows) > 10:
         return rows
     
-    # Si no hay suficientes filas, buscar en iframes
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    logging.info(f"Se encontraron {len(iframes)} iframes. Probando contenido...")
+    logging.info(f"Se encontraron {len(iframes)} iframes. Probando contenidos...")
     
     for index, iframe in enumerate(iframes):
         try:
@@ -65,7 +63,6 @@ def find_table_rows(driver):
             if len(rows) > 10:
                 logging.info(f"Tabla encontrada en el iframe índice {index}.")
                 return rows
-            # Si no está aquí, volver al principal para probar el siguiente
             driver.switch_to.default_content()
         except Exception:
             driver.switch_to.default_content()
@@ -78,9 +75,8 @@ def run_scraper():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--ignore-certificate-errors")
+    chrome_options.add_argument("--ignore-certificate-errors") # Importante para este sitio
     
-    # Inicializar WebDriver
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     wait = WebDriverWait(driver, 30)
@@ -89,22 +85,25 @@ def run_scraper():
         logging.info("Accediendo a la página de login...")
         driver.get("https://nemopilots.com/login")
         
-        # Esperar y realizar login
-        username_field = wait.until(EC.element_to_be_clickable((By.NAME, "_username")))
-        password_field = driver.find_element(By.NAME, "_password")
+        # --- CAMPOS ACTUALIZADOS ---
+        # Ahora el usuario es "email" y la contraseña "password"
+        username_field = wait.until(EC.element_to_be_clickable((By.NAME, "email"))) 
+        password_field = driver.find_element(By.NAME, "password")
         
         username_field.send_keys(NEMO_USER)
         password_field.send_keys(NEMO_PASS)
         
-        login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        # El botón de login a veces no tiene un ID claro, usamos el tipo submit del formulario
+        login_button = driver.find_element(By.XPATH, "//input[@type='submit' or @type='button'][contains(@value, 'Acceder')]")
+        if not login_button:
+             login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+             
         login_button.click()
         
-        logging.info("Login enviado. Esperando navegación a planificación...")
-        time.sleep(5) # Pequeña pausa tras login
+        logging.info("Login enviado. Esperando navegación...")
+        time.sleep(8)
         
         driver.get("https://nemopilots.com/planificacion/")
-        
-        # Espera generosa para carga AJAX/JS
         logging.info("Esperando renderizado de la tabla (15s)...")
         time.sleep(15)
         
@@ -117,7 +116,6 @@ def run_scraper():
         for row in rows:
             try:
                 cols = row.find_elements(By.TAG_NAME, "td")
-                # Estructura esperada: ETA(0), Buque(3), Consignatario(9), Muelle(11), Operación(13)
                 if len(cols) >= 14:
                     eta = cols[0].text.strip()
                     nombre = cols[3].text.strip()
@@ -128,7 +126,6 @@ def run_scraper():
                     if not nombre or not eta:
                         continue
                         
-                    # Identificador único simplificado
                     ship_id = f"{nombre}_{eta}".replace(" ", "_").replace("/", "-")
                     
                     if ship_id not in notified_ids:
@@ -140,26 +137,24 @@ def run_scraper():
                             f"*Muelle:* {muelle}\n"
                             f"*Operación:* {operacion}"
                         )
-                        logging.info(f"Enviando notificación: {nombre}")
+                        logging.info(f"Notificando buque: {nombre}")
                         send_telegram_message(message)
                         save_notified_id(ship_id)
                         notified_ids.add(ship_id)
                         new_notifications += 1
             except Exception:
-                continue # Saltar filas con errores de lectura
+                continue
         
-        logging.info(f"Script finalizado correctamente. Nuevos avisos: {new_notifications}")
+        logging.info(f"Proceso finalizado. Nuevos avisos: {new_notifications}")
         
     except Exception as e:
-        logging.error(f"Error crítico durante la ejecución: {e}")
+        logging.error(f"Fallo en login o scraping: {e}")
         driver.save_screenshot("error_screenshot.png")
-        logging.info("Se ha guardado una captura de pantalla del error.")
     finally:
         driver.quit()
 
 if __name__ == "__main__":
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, NEMO_USER, NEMO_PASS]):
-        logging.error("Configuración incompleta: Verifica las variables de entorno.")
+        logging.error("Faltan credenciales en los Secrets.")
     else:
         run_scraper()
-
