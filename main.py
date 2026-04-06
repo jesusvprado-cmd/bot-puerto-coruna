@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import logging
-from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -17,108 +16,102 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 NEMO_USER = os.getenv('NEMO_USER')
 NEMO_PASS = os.getenv('NEMO_PASS')
-HISTORY_FILE = "avisados.txt"
+HISTORY_FILE = "avisados_puerto.txt" # Historial separado para puerto
 
-def send_telegram(msg):
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': msg, 'parse_mode': 'Markdown'}
-    try: requests.post(url, json=payload).raise_for_status()
-    except Exception as e: logging.error(f"Error Telegram: {e}")
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f"Error Telegram: {e}")
 
 def get_history():
     if not os.path.exists(HISTORY_FILE): return set()
-    with open(HISTORY_FILE, "r") as f: return set(l.strip() for l in f if l.strip())
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
 
-def save_id(sid):
-    with open(HISTORY_FILE, "a") as f: f.write(f"{sid}\n")
+def save_history(ship_id):
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ship_id}\n")
 
-def run():
-    chrome_opts = Options()
-    chrome_opts.add_argument("--headless")
-    chrome_opts.add_argument("--no-sandbox")
-    chrome_opts.add_argument("--disable-dev-shm-usage")
-    chrome_opts.add_argument("--window-size=1920,1080")
-    chrome_opts.add_argument("--ignore-certificate-errors")
+def run_scraper():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--ignore-certificate-errors")
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_opts)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 30)
     
     try:
-        logging.info("Entrando...")
+        logging.info("Iniciando sesión...")
         driver.get("https://nemopilots.com/login")
+        
         wait.until(EC.element_to_be_clickable((By.NAME, "email"))).send_keys(NEMO_USER)
         driver.find_element(By.NAME, "password").send_keys(NEMO_PASS)
         driver.find_element(By.XPATH, "//input[@type='submit' or @type='button'][contains(@value, 'Acceder')]").click()
         
-        time.sleep(10)
-        try: wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Planificaci"))).click()
-        except: driver.get("https://nemopilots.com/planificacion")
-        time.sleep(12)
+        time.sleep(8)
+        # Ir a planificación donde están ambas tablas
+        driver.get("https://nemopilots.com/planificacion")
+        logging.info("Esperando carga de la tabla de Buques en Puerto...")
+        time.sleep(15)
 
+        # Buscamos todas las tablas
         tables = driver.find_elements(By.TAG_NAME, "table")
+        if not tables:
+            logging.error("No se encontraron tablas.")
+            return
+
+        # La primera tabla suele ser siempre "Buques en puerto"
+        puerto_table = tables[0]
+        rows = puerto_table.find_elements(By.TAG_NAME, "tr")
         history = get_history()
-        now = datetime.now()
+        count = 0
         
-        # 1. ANALIZAR BUQUES EN PUERTO (Atracados)
-        atracados_msg = "📍 *BUQUES ACTUALMENTE EN PUERTO*\n"
-        found_atracado = False
-        
-        if len(tables) > 0:
-            rows = tables[0].find_elements(By.TAG_NAME, "tr")
-            for r in rows:
-                cols = r.find_elements(By.TAG_NAME, "td")
-                # Basado en tu foto: ETD(0), ATA(3), Atraque(5), Buque(6), Consigna(7), Obs(9)
-                if len(cols) >= 8:
-                    buque = cols[6].text.strip()
-                    ata = cols[3].text.strip()
-                    muelle = cols[5].text.strip()
-                    if "/" in ata and buque:
-                        atracados_msg += f"• *{buque}* | Atracó: {ata}\n  Muelle: {muelle}\n"
-                        found_atracado = True
-                        # Notificar si es una entrada nueva al puerto
-                        sid = f"IN_{buque}_{ata}".replace(" ","_")
-                        if sid not in history:
-                            send_telegram(f"🔔 *Entrada Detectada en Puerto*\n¡El buque *{buque}* acaba de atracar!\nMuelle: {muelle}\nATA: {ata}")
-                            save_id(sid)
-                            history.add(sid)
-
-        # 2. ANALIZAR PREVISIÓN (Próximas 8 horas)
-        plan_msg = "🕒 *PREVISIÓN PRÓXIMAS 8 HORAS*\n"
-        found_plan = False
-        limit_time = now + timedelta(hours=8)
-
-        if len(tables) > 1:
-            rows = tables[1].find_elements(By.TAG_NAME, "tr")
-            for r in rows:
-                cols = r.find_elements(By.TAG_NAME, "td")
-                # Basado en tu foto: ETA(0), Buque(6), Consigna(10), Atraque(11)
-                if len(cols) >= 11:
-                    eta_str = cols[0].text.strip()
-                    nombre = cols[6].text.strip()
-                    muelle = cols[11].text.strip()
+        for row in rows:
+            cols = row.find_elements(By.TAG_NAME, "td")
+            # La tabla de puerto tiene unas 10 columnas
+            if 8 <= len(cols) <= 12:
+                try:
+                    # MAPPING CORRECTO PARA "BUQUES EN PUERTO"
+                    ata = cols[3].text.strip()      # Columna 3: ATA (Fecha atraque)
+                    muelle = cols[5].text.strip()   # Columna 5: Atraque (Muelle)
+                    buque = cols[6].text.strip()    # Columna 6: Buque (Nombre)
+                    agente = cols[7].text.strip()   # Columna 7: Consignataria
                     
-                    if "/" in eta_str and nombre:
-                        # Comprobar si está dentro de las próximas 8 horas
-                        try:
-                            # Formato esperado: "24/03/26 21:00"
-                            eta_dt = datetime.strptime(eta_str, "%d/%m/%y %H:%M")
-                            if now <= eta_dt <= limit_time:
-                                plan_msg += f"• *{nombre}* | ETA: {eta_str}\n  Muelle: {muelle}\n"
-                                found_plan = True
-                        except: pass
-                        
-                        # Notificar nueva planificación (cualquier hora)
-                        sid = f"PLAN_{nombre}_{eta_str}".replace(" ","_")
-                        if sid not in history:
-                            send_telegram(f"🚢 *Nueva Planificación Detectada*\nBuque: {nombre}\nETA: {eta_str}\nMuelle: {muelle}")
-                            save_id(sid)
-                            history.add(sid)
-
-        # Enviar resúmenes solo si hay algo relevante y el usuario lo quiere (lo podrias activar con un flag)
-        # Por ahora lo dejamos automático para tu control
+                    if not (buque and ata and "/" in ata):
+                        continue
+                    
+                    # Identificador único para este atraque
+                    ship_id = f"ATR_{buque}_{ata}".replace(" ", "_").replace("/", "-")
+                    
+                    if ship_id not in history:
+                        message = (
+                            f"🔔 *Entrada en Puerto Detectada*\n\n"
+                            f"🚢 *Buque:* {buque}\n"
+                            f"📍 *Muelle:* {muelle}\n"
+                            f"🕒 *Llegada (ATA):* {ata}\n"
+                            f"🏢 *Agente:* {agente}"
+                        )
+                        logging.info(f"Nuevo buque atracado: {buque}")
+                        send_telegram(message)
+                        save_history(ship_id)
+                        history.add(ship_id)
+                        count += 1
+                except Exception as e:
+                    continue
         
-    except Exception as e: logging.error(f"Error: {e}")
-    finally: driver.quit()
+        logging.info(f"Finalizado. Nuevos barcos en puerto: {count}")
+        
+    except Exception as e:
+        logging.error(f"Error: {e}")
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
-    run()
+    run_scraper()
