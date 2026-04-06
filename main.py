@@ -35,6 +35,10 @@ def save_history(ship_id):
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:
         f.write(f"{ship_id}\n")
 
+def limpiar(texto):
+    """Elimina saltos de línea y espacios extra de cualquier texto."""
+    return " ".join(texto.split())
+
 def run_scraper():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -57,7 +61,6 @@ def run_scraper():
         logging.info("Login OK. Esperando carga del portal...")
         time.sleep(10)
         
-        # Clic en el menú lateral de Planificación
         try:
             plan_link = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Planificaci")))
             plan_link.click()
@@ -76,8 +79,8 @@ def run_scraper():
             driver.save_screenshot("debug_final.png")
             return
 
-        # La primera tabla es "Buques en puerto"
-        # Columnas: 0=ETD, 1=Marea, 2=Días, 3=ATA, 4=SC, 5=N°Escala, 6=Atraque, 7=Buque, 8=Consignataria, 9=Secuencia, 10=Obs
+        # Columnas de "Buques en puerto":
+        # 0=ETD, 1=Marea, 2=Días, 3=ATA, 4=SC, 5=N°Escala, 6=Atraque, 7=Buque, 8=Consignataria, 9=Secuencia, 10=Obs
         rows = tables[0].find_elements(By.TAG_NAME, "tr")
         history = get_history()
         count = 0
@@ -86,11 +89,15 @@ def run_scraper():
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) >= 10:
                 try:
-                    ata      = cols[3].text.strip()   # ATA (fecha y hora de llegada)
-                    muelle   = cols[6].text.strip()   # Atraque (muelle + norays)
-                    buque    = cols[7].text.strip()   # Buque (nombre + IMO + datos)
-                    consigna = cols[8].text.strip()   # Consignataria
-                    obs      = cols[10].text.strip()  # Observaciones
+                    # Leer texto de cada columna y limpiar saltos de línea
+                    ata_raw   = cols[3].text.strip()
+                    muelle    = cols[6].text.strip()
+                    buque     = cols[7].text.strip()
+                    consigna  = cols[8].text.strip()
+                    obs       = cols[10].text.strip() if len(cols) > 10 else ""
+                    
+                    # ATA limpia en una sola línea (ej: "06/04/26 05:00")
+                    ata = limpiar(ata_raw)
                     
                     # Validar que la fila tiene datos reales
                     if not (buque and ata and "/" in ata):
@@ -115,8 +122,8 @@ def run_scraper():
                             break
                     nombre_buque_completo = f"{nombre_buque} {imo}".strip()
                     
-                    # ID único para este atraque
-                    ship_id = f"ATR_{nombre_buque}_{ata}".replace(" ", "_").replace("/", "-")
+                    # ID único limpio (sin saltos de línea, sin barras)
+                    ship_id = f"ATR_{nombre_buque}_{ata}".replace(" ", "_").replace("/", "-").replace("\n", "")
                     
                     if ship_id not in history:
                         message = (
@@ -124,8 +131,8 @@ def run_scraper():
                             f"🚢 *Buque:* {nombre_buque_completo}\n"
                             f"📍 *Muelle:* {nombre_muelle}\n"
                             f"🕒 *Llegada (ATA):* {ata}\n"
-                            f"🏢 *Consignataria:* {consigna.split(chr(10))[0]}\n"
-                            f"📋 *Obs:* {obs if obs else '-'}"
+                            f"🏢 *Consignataria:* {limpiar(consigna).split(' ')[0]}\n"
+                            f"📋 *Obs:* {limpiar(obs) if obs else '-'}"
                         )
                         logging.info(f"Notificando buque: {nombre_buque_completo}")
                         send_telegram(message)
