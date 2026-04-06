@@ -86,31 +86,48 @@ def run_scraper():
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) >= 10:
                 try:
-                    ata          = cols[3].text.strip()   # ATA (fecha llegada)
-                    muelle       = cols[6].text.strip()   # Atraque (nombre del muelle)
-                    buque        = cols[7].text.strip()   # Buque (nombre del barco)
-                    consigna     = cols[8].text.strip()   # Consignataria (agente)
-                    obs          = cols[10].text.strip()  # Observaciones
+                    ata      = cols[3].text.strip()   # ATA (fecha y hora de llegada)
+                    muelle   = cols[6].text.strip()   # Atraque (muelle + norays)
+                    buque    = cols[7].text.strip()   # Buque (nombre + IMO + datos)
+                    consigna = cols[8].text.strip()   # Consignataria
+                    obs      = cols[10].text.strip()  # Observaciones
                     
-                    # Validar que la fila tiene datos reales (ATA tiene formato fecha)
+                    # Validar que la fila tiene datos reales
                     if not (buque and ata and "/" in ata):
                         continue
                     
-                    # Usar solo la primera línea del nombre del buque (sin IMO, GT, etc)
-                    nombre_buque = buque.split("\n")[0].strip()
+                    # MUELLE: solo la primera línea, sin los norays "(16 - 22)"
+                    nombre_muelle = muelle.split("\n")[0].strip()
                     
+                    # BUQUE: primera línea como nombre + extraer IMO
+                    lineas_buque = buque.split("\n")
+                    nombre_buque = lineas_buque[0].strip()
+                    imo = ""
+                    for linea in lineas_buque:
+                        if "IMO" in linea:
+                            partes = linea.strip().split()
+                            try:
+                                idx = partes.index("IMO")
+                                if idx + 1 < len(partes):
+                                    imo = f"(IMO {partes[idx + 1]})"
+                            except ValueError:
+                                pass
+                            break
+                    nombre_buque_completo = f"{nombre_buque} {imo}".strip()
+                    
+                    # ID único para este atraque
                     ship_id = f"ATR_{nombre_buque}_{ata}".replace(" ", "_").replace("/", "-")
                     
                     if ship_id not in history:
                         message = (
                             f"🔔 *Nuevo Barco en el Puerto*\n\n"
-                            f"🚢 *Buque:* {nombre_buque}\n"
-                            f"📍 *Muelle:* {muelle}\n"
+                            f"🚢 *Buque:* {nombre_buque_completo}\n"
+                            f"📍 *Muelle:* {nombre_muelle}\n"
                             f"🕒 *Llegada (ATA):* {ata}\n"
                             f"🏢 *Consignataria:* {consigna.split(chr(10))[0]}\n"
                             f"📋 *Obs:* {obs if obs else '-'}"
                         )
-                        logging.info(f"Notificando buque: {nombre_buque}")
+                        logging.info(f"Notificando buque: {nombre_buque_completo}")
                         send_telegram(message)
                         save_history(ship_id)
                         history.add(ship_id)
