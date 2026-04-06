@@ -57,13 +57,13 @@ def run_scraper():
         logging.info("Login OK. Esperando carga del portal...")
         time.sleep(10)
         
-        # --- CLIC EN EL MENÚ LATERAL (método que sí funciona) ---
+        # Clic en el menú lateral de Planificación
         try:
             plan_link = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Planificaci")))
             plan_link.click()
-            logging.info("Clic en menú Planificación OK.")
+            logging.info("Menú Planificación OK.")
         except Exception as e:
-            logging.warning(f"No se encontró el menú, error: {e}")
+            logging.warning(f"No se encontró el menú: {e}")
         
         logging.info("Esperando carga de tablas (15s)...")
         time.sleep(15)
@@ -72,38 +72,45 @@ def run_scraper():
         logging.info(f"Tablas encontradas: {len(tables)}")
         
         if not tables:
-            logging.error("No se encontraron tablas tras el clic en menú.")
+            logging.error("No se encontraron tablas.")
             driver.save_screenshot("debug_final.png")
             return
 
-        # La PRIMERA tabla es siempre "Buques en puerto"
+        # La primera tabla es "Buques en puerto"
+        # Columnas: 0=ETD, 1=Marea, 2=Días, 3=ATA, 4=SC, 5=N°Escala, 6=Atraque, 7=Buque, 8=Consignataria, 9=Secuencia, 10=Obs
         rows = tables[0].find_elements(By.TAG_NAME, "tr")
         history = get_history()
         count = 0
         
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
-            if 8 <= len(cols) <= 12:
+            if len(cols) >= 10:
                 try:
-                    ata    = cols[3].text.strip()   # Fecha de llegada real
-                    muelle = cols[5].text.strip()   # Muelle de atraque
-                    buque  = cols[6].text.strip()   # Nombre del barco
-                    agente = cols[7].text.strip()   # Consignataria / Agente
+                    ata          = cols[3].text.strip()   # ATA (fecha llegada)
+                    muelle       = cols[6].text.strip()   # Atraque (nombre del muelle)
+                    buque        = cols[7].text.strip()   # Buque (nombre del barco)
+                    consigna     = cols[8].text.strip()   # Consignataria (agente)
+                    obs          = cols[10].text.strip()  # Observaciones
                     
+                    # Validar que la fila tiene datos reales (ATA tiene formato fecha)
                     if not (buque and ata and "/" in ata):
                         continue
                     
-                    ship_id = f"ATR_{buque}_{ata}".replace(" ", "_").replace("/", "-")
+                    # Usar solo la primera línea del nombre del buque (sin IMO, GT, etc)
+                    nombre_buque = buque.split("\n")[0].strip()
+                    
+                    ship_id = f"ATR_{nombre_buque}_{ata}".replace(" ", "_").replace("/", "-")
                     
                     if ship_id not in history:
                         message = (
                             f"🔔 *Nuevo Barco en el Puerto*\n\n"
-                            f"🚢 *Buque:* {buque}\n"
+                            f"🚢 *Buque:* {nombre_buque}\n"
                             f"📍 *Muelle:* {muelle}\n"
                             f"🕒 *Llegada (ATA):* {ata}\n"
-                            f"🏢 *Agente:* {agente}"
+                            f"🏢 *Consignataria:* {consigna.split(chr(10))[0]}\n"
+                            f"📋 *Obs:* {obs if obs else '-'}"
                         )
-                        logging.info(f"Nuevo barco: {buque}")
+                        logging.info(f"Notificando buque: {nombre_buque}")
                         send_telegram(message)
                         save_history(ship_id)
                         history.add(ship_id)
@@ -111,7 +118,7 @@ def run_scraper():
                 except:
                     continue
         
-        logging.info(f"Listo. Nuevos barcos notificados: {count}")
+        logging.info(f"Finalizado. Nuevos barcos notificados: {count}")
         
     except Exception as e:
         logging.error(f"Error crítico: {e}")
