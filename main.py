@@ -16,14 +16,13 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 NEMO_USER = os.getenv('NEMO_USER')
 NEMO_PASS = os.getenv('NEMO_PASS')
-HISTORY_FILE = "avisados_puerto.txt" # Historial separado para puerto
+HISTORY_FILE = "avisados_puerto.txt"
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        requests.post(url, json=payload).raise_for_status()
     except Exception as e:
         logging.error(f"Error Telegram: {e}")
 
@@ -55,61 +54,68 @@ def run_scraper():
         driver.find_element(By.NAME, "password").send_keys(NEMO_PASS)
         driver.find_element(By.XPATH, "//input[@type='submit' or @type='button'][contains(@value, 'Acceder')]").click()
         
-        time.sleep(8)
-        # Ir a planificación donde están ambas tablas
-        driver.get("https://nemopilots.com/planificacion")
-        logging.info("Esperando carga de la tabla de Buques en Puerto...")
+        logging.info("Login OK. Esperando carga del portal...")
+        time.sleep(10)
+        
+        # --- CLIC EN EL MENÚ LATERAL (método que sí funciona) ---
+        try:
+            plan_link = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, "Planificaci")))
+            plan_link.click()
+            logging.info("Clic en menú Planificación OK.")
+        except Exception as e:
+            logging.warning(f"No se encontró el menú, error: {e}")
+        
+        logging.info("Esperando carga de tablas (15s)...")
         time.sleep(15)
-
-        # Buscamos todas las tablas
+        
         tables = driver.find_elements(By.TAG_NAME, "table")
+        logging.info(f"Tablas encontradas: {len(tables)}")
+        
         if not tables:
-            logging.error("No se encontraron tablas.")
+            logging.error("No se encontraron tablas tras el clic en menú.")
+            driver.save_screenshot("debug_final.png")
             return
 
-        # La primera tabla suele ser siempre "Buques en puerto"
-        puerto_table = tables[0]
-        rows = puerto_table.find_elements(By.TAG_NAME, "tr")
+        # La PRIMERA tabla es siempre "Buques en puerto"
+        rows = tables[0].find_elements(By.TAG_NAME, "tr")
         history = get_history()
         count = 0
         
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
-            # La tabla de puerto tiene unas 10 columnas
             if 8 <= len(cols) <= 12:
                 try:
-                    # MAPPING CORRECTO PARA "BUQUES EN PUERTO"
-                    ata = cols[3].text.strip()      # Columna 3: ATA (Fecha atraque)
-                    muelle = cols[5].text.strip()   # Columna 5: Atraque (Muelle)
-                    buque = cols[6].text.strip()    # Columna 6: Buque (Nombre)
-                    agente = cols[7].text.strip()   # Columna 7: Consignataria
+                    ata    = cols[3].text.strip()   # Fecha de llegada real
+                    muelle = cols[5].text.strip()   # Muelle de atraque
+                    buque  = cols[6].text.strip()   # Nombre del barco
+                    agente = cols[7].text.strip()   # Consignataria / Agente
                     
                     if not (buque and ata and "/" in ata):
                         continue
                     
-                    # Identificador único para este atraque
                     ship_id = f"ATR_{buque}_{ata}".replace(" ", "_").replace("/", "-")
                     
                     if ship_id not in history:
                         message = (
-                            f"🔔 *Entrada en Puerto Detectada*\n\n"
+                            f"🔔 *Nuevo Barco en el Puerto*\n\n"
                             f"🚢 *Buque:* {buque}\n"
                             f"📍 *Muelle:* {muelle}\n"
                             f"🕒 *Llegada (ATA):* {ata}\n"
                             f"🏢 *Agente:* {agente}"
                         )
-                        logging.info(f"Nuevo buque atracado: {buque}")
+                        logging.info(f"Nuevo barco: {buque}")
                         send_telegram(message)
                         save_history(ship_id)
                         history.add(ship_id)
                         count += 1
-                except Exception as e:
+                except:
                     continue
         
-        logging.info(f"Finalizado. Nuevos barcos en puerto: {count}")
+        logging.info(f"Listo. Nuevos barcos notificados: {count}")
         
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Error crítico: {e}")
+        driver.save_screenshot("debug_final.png")
     finally:
         driver.quit()
 
