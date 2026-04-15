@@ -1,14 +1,13 @@
 name: Monitoreo Portuario Nemo Pilots
 
 on:
-  schedule:
-    - cron: '*/30 * * * *' # Cada 30 minutos
-  workflow_dispatch: # Permite ejecución manual
+  # schedule:
+  #   - cron: '*/30 * * * *'  # Desactivado: ahora lo dispara cron-job.org cada 30 min
+  workflow_dispatch:            # cron-job.org llama a este trigger via API
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    
     permissions:
       contents: write
 
@@ -23,35 +22,41 @@ jobs:
       with:
         python-version: '3.9'
 
-    - name: Install dependencies
-      run: pip install selenium webdriver-manager requests
-
-    - name: Install Google Chrome
+    - name: Install Python dependencies
       run: |
-        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-        sudo apt-get update
+        python -m pip install --upgrade pip
+        pip install selenium webdriver-manager requests
+
+    - name: Install Google Chrome (stable)
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y wget gnupg
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
+        sudo apt-get update -q
         sudo apt-get install -y google-chrome-stable
+        google-chrome --version
 
     - name: Run Scraper
       env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        NEMO_USER: ${{ secrets.NEMO_USER }}
-        NEMO_PASS: ${{ secrets.NEMO_PASS }}
-      run: python main.py
+        NEMO_USER:        ${{ secrets.NEMO_USER }}
+        NEMO_PASS:        ${{ secrets.NEMO_PASS }}
+      run: python bot.py
 
     - name: Upload Debug Screenshot
-      if: failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: debug-screenshot
+        name: capturas-depuracion
         path: debug_final.png
+        if-no-files-found: ignore
 
-    - name: Commit and push changes
+    - name: Commit and push history
       if: always()
       run: |
-        git config --global user.name "GitHub Action Bot"
+        git config --global user.name  "GitHub Action Bot"
         git config --global user.email "actions@github.com"
         git add avisados_puerto.txt || true
         if [ -n "$(git status --porcelain)" ]; then
