@@ -58,7 +58,13 @@ def login(driver, wait):
     logging.info("Accediendo al login...")
     driver.get("https://nemopilots.com/login")
     time.sleep(3)
-    for selector in [(By.NAME,"_username"),(By.NAME,"username"),(By.NAME,"email"),(By.CSS_SELECTOR,"input[type='email']"),(By.CSS_SELECTOR,"input[type='text']")]:
+    for selector in [
+        (By.NAME, "_username"),
+        (By.NAME, "username"),
+        (By.NAME, "email"),
+        (By.CSS_SELECTOR, "input[type='email']"),
+        (By.CSS_SELECTOR, "input[type='text']"),
+    ]:
         try:
             field = wait.until(EC.presence_of_element_located(selector))
             field.clear()
@@ -67,7 +73,11 @@ def login(driver, wait):
             break
         except:
             continue
-    for selector in [(By.NAME,"_password"),(By.NAME,"password"),(By.CSS_SELECTOR,"input[type='password']")]:
+    for selector in [
+        (By.NAME, "_password"),
+        (By.NAME, "password"),
+        (By.CSS_SELECTOR, "input[type='password']"),
+    ]:
         try:
             field = driver.find_element(*selector)
             field.clear()
@@ -76,7 +86,11 @@ def login(driver, wait):
             break
         except:
             continue
-    for selector in [(By.CSS_SELECTOR,"button[type='submit']"),(By.CSS_SELECTOR,"input[type='submit']"),(By.XPATH,"//button[contains(text(),'Acced') or contains(text(),'Entr') or contains(text(),'Login')]")]:
+    for selector in [
+        (By.CSS_SELECTOR, "button[type='submit']"),
+        (By.CSS_SELECTOR, "input[type='submit']"),
+        (By.XPATH, "//button[contains(text(),'Acced') or contains(text(),'Entr') or contains(text(),'Login')]"),
+    ]:
         try:
             driver.find_element(*selector).click()
             logging.info("Botón login pulsado.")
@@ -89,7 +103,10 @@ def login(driver, wait):
 
 def ir_a_planificacion(driver, wait):
     logging.info("Navegando a Planificación...")
-    for selector in [(By.PARTIAL_LINK_TEXT,"Planificaci"),(By.XPATH,"//*[contains(text(),'Planificaci')]")]:
+    for selector in [
+        (By.PARTIAL_LINK_TEXT, "Planificaci"),
+        (By.XPATH, "//*[contains(text(),'Planificaci')]"),
+    ]:
         try:
             link = wait.until(EC.element_to_be_clickable(selector))
             link.click()
@@ -106,13 +123,23 @@ def extraer_buques(driver):
     barcos = []
     tables = driver.find_elements(By.TAG_NAME, "table")
     logging.info(f"Tablas encontradas: {len(tables)}")
+
     if not tables:
         driver.save_screenshot("debug_final.png")
         logging.error("No se encontraron tablas.")
         return barcos
-    best_table = max(tables, key=lambda t: len(t.find_elements(By.TAG_NAME, "tr")))
-    rows = best_table.find_elements(By.TAG_NAME, "tr")
-    logging.info(f"Filas en tabla principal: {len(rows)}")
+
+    # La tabla 'Buques en puerto' es siempre la primera
+    tabla = tables[0]
+    rows = tabla.find_elements(By.TAG_NAME, "tr")
+    logging.info(f"Filas en tabla Buques en puerto: {len(rows)}")
+
+    # Log de diagnóstico: mostrar contenido de primeras filas
+    for i, row in enumerate(rows[:5]):
+        cols = row.find_elements(By.TAG_NAME, "td")
+        if cols:
+            logging.info(f"  Fila {i}: {[c.text.strip()[:20] for c in cols[:11]]}")
+
     for row in rows:
         cols = row.find_elements(By.TAG_NAME, "td")
         if len(cols) < 9:
@@ -123,10 +150,15 @@ def extraer_buques(driver):
             buque    = cols[7].text.strip()
             consigna = cols[8].text.strip()
             obs      = cols[10].text.strip() if len(cols) > 10 else ""
+
             ata = limpiar(ata_raw)
-            if not buque or not ata or "/" not in ata:
+
+            # Validar que la fila tiene datos reales (fecha con números y guion o barra)
+            if not buque or not ata or not re.search(r'\d\d[-/]\d\d', ata):
                 continue
+
             nombre_muelle = muelle.split("\n")[0].strip()
+
             lineas_buque = buque.split("\n")
             nombre_buque = lineas_buque[0].strip()
             imo = ""
@@ -136,7 +168,9 @@ def extraer_buques(driver):
                     if match:
                         imo = f"(IMO {match.group(1)})"
                     break
+
             nombre_buque_completo = f"{nombre_buque} {imo}".strip()
+
             barcos.append({
                 'id_key'  : f"ATR_{nombre_buque}_{ata}",
                 'buque'   : nombre_buque_completo,
@@ -148,6 +182,7 @@ def extraer_buques(driver):
         except Exception as ex:
             logging.debug(f"Fila ignorada: {ex}")
             continue
+
     logging.info(f"Barcos extraídos: {len(barcos)}")
     return barcos
 
@@ -155,23 +190,30 @@ def run():
     if not all([TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, NEMO_USER, NEMO_PASS]):
         logging.error("Faltan variables de entorno.")
         return
+
     driver = get_driver()
     wait   = WebDriverWait(driver, 30)
+
     try:
         if not login(driver, wait):
             logging.error("Login fallido.")
             driver.save_screenshot("debug_final.png")
             return
+
         ir_a_planificacion(driver, wait)
         barcos = extraer_buques(driver)
+
         if not barcos:
-            logging.warning("No se encontraron barcos.")
+            logging.warning("No se encontraron barcos. Guardando captura.")
             driver.save_screenshot("debug_final.png")
             return
+
         history = get_history()
         nuevos  = 0
+
         for b in barcos:
-            ship_id = b['id_key'].replace(" ","_").replace("/","-").replace("\n","")
+            ship_id = b['id_key'].replace(" ", "_").replace("/", "-").replace("\n", "")
+
             if ship_id not in history:
                 message = (
                     f"🔔 *Nuevo Barco en el Puerto*\n\n"
@@ -186,7 +228,9 @@ def run():
                 save_to_history(ship_id)
                 history.add(ship_id)
                 nuevos += 1
-        logging.info(f"Completado. Nuevos: {nuevos}")
+
+        logging.info(f"Completado. Nuevos barcos notificados: {nuevos}")
+
     except Exception as e:
         logging.error(f"Error crítico: {e}")
         driver.save_screenshot("debug_final.png")
