@@ -2,8 +2,8 @@ name: Monitoreo Portuario Nemo Pilots
 
 on:
   # schedule:
-  #   - cron: '*/30 * * * *'  # Desactivado: ahora lo dispara cron-job.org cada 30 min
-  workflow_dispatch:            # cron-job.org llama a este trigger via API
+  #   - cron: '*/30 * * * *'  # Desactivado: lo dispara cron-job.org
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -43,7 +43,7 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         NEMO_USER:        ${{ secrets.NEMO_USER }}
         NEMO_PASS:        ${{ secrets.NEMO_PASS }}
-      run: python bot.py
+      run: python main.py
 
     - name: Upload Debug Screenshot
       if: always()
