@@ -219,8 +219,11 @@ def extraer_buques(driver):
 
             nombre_buque_completo = f"{nombre_buque} {imo}".strip()
 
+            # Extraemos solo la fecha para el ID, pero añadimos el muelle
+            fecha_llegada = ata.split(" ")[0] if " " in ata else ata
+
             barcos.append({
-                'id_key'  : f"ATR_{nombre_buque}_{ata}",
+                'id_key'  : f"ATR_{nombre_buque}_{fecha_llegada}_{nombre_muelle}",
                 'buque'   : nombre_buque_completo,
                 'nombre'  : nombre_buque,
                 'muelle'  : nombre_muelle,
